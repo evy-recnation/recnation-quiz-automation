@@ -22,9 +22,9 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-const ANSWER_KEYS_DB   = '3338e709-96c7-8004-8d0a-000bf70cc982';
-const FSM_TRACKER_DB   = '55e63f91-9996-40e6-b11c-e9a9fbf532a0';
-const FOCUSED_TRACKER_DB = '0f58e709-96c7-82d9-b742-07a5bd22c00d';
+const ANSWER_KEYS_DB   = '3338e709-96c7-809a-9e6f-fc9d18bf14b7';
+const FSM_TRACKER_DB   = '41f5edc5-8ddd-4522-9057-70f445e9f3fb';
+const FOCUSED_TRACKER_DB = 'e308e709-96c7-838e-a50b-8194b02e9a40';
 
 // Name property candidates (tried in order)
 const NAME_PROPS = [
