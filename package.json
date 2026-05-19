@@ -1,0 +1,19 @@
+{
+  "name": "recnation-quiz-automation",
+  "version": "1.0.0",
+  "description": "Automation scripts for managing quiz submissions in Notion.",
+  "main": "notion-auto-grade-100.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:40659/git/evy-recnation/recnation-quiz-automation"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@notionhq/client": "^5.21.0"
+  }
+}
