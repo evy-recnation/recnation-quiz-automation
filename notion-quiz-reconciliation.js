@@ -29,6 +29,7 @@ if (!TOKEN) {
 const ANSWER_KEYS_DB     = '3338e709-96c7-809a-9e6f-fc9d18bf14b7';
 const FSM_TRACKER_DB     = '41f5edc5-8ddd-4522-9057-70f445e9f3fb';
 const FOCUSED_TRACKER_DB = 'e308e709-96c7-838e-a50b-8194b02e9a40';
+const FSM_DIRECTORY_DB   = '47b2cd7b-661a-4bab-83ae-8c8beeb1be51';
 
 const UNRENTABLE_KEYWORD = 'unrentable';
 
@@ -287,6 +288,30 @@ async function scanResponses(quizzes) {
   return submissions;
 }
 
+// ─── FSM Directory ───────────────────────────────────────────────────────────
+
+/**
+ * Returns an array of name strings for FSMs who are still active
+ * (present in the directory with a blank Last Day field).
+ */
+async function loadActiveFSMs() {
+  console.log('  Loading FSM Directory…');
+  const rows = await getAllRows(FSM_DIRECTORY_DB);
+  const active = [];
+  for (const row of rows) {
+    const name    = getTitle(row.properties);
+    const lastDay = row.properties['Last Day'];
+    if (name && !lastDay?.date) active.push(name);
+  }
+  console.log(`    ${rows.length} total FSMs, ${active.length} active (no Last Day)`);
+  return active;
+}
+
+/** True if the submission name matches any entry in the active FSM list. */
+function isActiveFSM(submissionName, activeFSMs) {
+  return activeFSMs.some((fsm) => nameMatch(cleanName(fsm), submissionName));
+}
+
 // ─── Step 2b: Feedback check for ungraded Unrentable ─────────────────────────
 
 async function checkFeedbackContent(pageId) {
@@ -443,7 +468,7 @@ function pad(s, n) {
   return str.length >= n ? str : str + ' '.repeat(n - str.length);
 }
 
-function printReport(submissions, allTrackedPairs) {
+function printReport(submissions, allTrackedPairs, activeFSMs) {
   const needsGrading  = submissions.filter((s) => !s.teamsMsg);
   const gradedNotSent = submissions.filter((s) => s.teamsMsg && !s.resultsSent);
   const trackerGaps   = submissions.filter((s) => !inTracker(s, allTrackedPairs));
@@ -501,21 +526,32 @@ function printReport(submissions, allTrackedPairs) {
   // ── C ─────────────────────────────────────────────────────────────────────
   console.log('\n' + SEP);
   console.log('C) TRACKER GAPS — fully complete (graded + sent) but not found in either tracker');
+  console.log('   (filtered to active FSMs only — people not in directory or with Last Day filled are excluded)');
   console.log(SEP);
-  const completeGaps = trackerGaps.filter((s) => s.teamsMsg && s.resultsSent);
+
+  // Only flag gaps for active FSMs; silently skip former/non-FSM submitters
+  const allCompleteGaps = trackerGaps.filter((s) => s.teamsMsg && s.resultsSent);
+  const completeGaps    = allCompleteGaps.filter((s) => isActiveFSM(s.name, activeFSMs));
+  const skipped         = allCompleteGaps.filter((s) => !isActiveFSM(s.name, activeFSMs));
+
   if (!completeGaps.length) {
-    console.log('   (none — all complete submissions are tracked!)');
+    console.log('   (none — all active FSM completions are tracked!)');
   } else {
     console.log(HDR); console.log(DIV);
     completeGaps.forEach((s) =>
       console.log(`   ${pad(s.quizName, 36)} ${pad(s.name, 28)} ${pad(s.date, 12)} Missing from tracker`)
     );
   }
+  if (skipped.length) {
+    console.log(`\n   Excluded (not active FSMs): ${skipped.map((s) => s.name).join(', ')}`);
+  }
 
-  // Also show incomplete-but-untracked as a secondary section
-  const incompleteUntracked = trackerGaps.filter((s) => !(s.teamsMsg && s.resultsSent));
+  // Incomplete-but-untracked: also filter to active FSMs
+  const incompleteUntracked = trackerGaps
+    .filter((s) => !(s.teamsMsg && s.resultsSent))
+    .filter((s) => isActiveFSM(s.name, activeFSMs));
   if (incompleteUntracked.length) {
-    console.log(`\n   ── Also untracked but incomplete (not yet fully graded/sent) [${incompleteUntracked.length}] ──`);
+    console.log(`\n   ── Also untracked but incomplete — active FSMs not yet fully graded/sent [${incompleteUntracked.length}] ──`);
     console.log(HDR); console.log(DIV);
     incompleteUntracked.forEach((s) =>
       console.log(`   ${pad(s.quizName, 36)} ${pad(s.name, 28)} ${pad(s.date, 12)} Incomplete + untracked`)
@@ -531,8 +567,11 @@ function printReport(submissions, allTrackedPairs) {
   for (const s of submissions) {
     if (!byQuiz[s.quizName]) byQuiz[s.quizName] = { total: 0, complete: 0, gaps: 0 };
     byQuiz[s.quizName].total++;
-    if (s.teamsMsg && s.resultsSent && inTracker(s, allTrackedPairs)) byQuiz[s.quizName].complete++;
-    if (s.teamsMsg && s.resultsSent && !inTracker(s, allTrackedPairs)) byQuiz[s.quizName].gaps++;
+    const tracked = inTracker(s, allTrackedPairs);
+    if (s.teamsMsg && s.resultsSent && tracked)  byQuiz[s.quizName].complete++;
+    // Only count as a gap if the person is an active FSM
+    if (s.teamsMsg && s.resultsSent && !tracked && isActiveFSM(s.name, activeFSMs))
+      byQuiz[s.quizName].gaps++;
   }
 
   console.log(`   ${pad('Quiz Name', 50)} ${pad('Total', 7)} ${pad('Fully Complete', 16)} Tracker Gaps`);
@@ -547,7 +586,7 @@ function printReport(submissions, allTrackedPairs) {
   console.log('   ' + '─'.repeat(88));
   console.log(`   ${pad('TOTAL', 50)} ${pad(grandTotal, 7)} ${pad(grandComplete, 16)} ${grandGaps}`);
   console.log('\n   "Fully Complete" = Teams Message ✓ + Results Sent ✓ + in tracker ✓');
-  console.log(  '   "Tracker Gaps"  = graded + sent but date missing from both trackers\n');
+  console.log(  '   "Tracker Gaps"  = graded + sent + active FSM, but date missing from both trackers\n');
 
   // ── E: Unrentable deep-dive ───────────────────────────────────────────────
   if (unrentableUngraded.length > 0) {
@@ -588,14 +627,21 @@ function printReport(submissions, allTrackedPairs) {
 
     await enrichUnrentableFeedback(submissions);
 
-    console.log('\nStep 3 — Reading trackers…');
-    const { trackedPairs: fsmPairs,     fsmRows     } = await readFSMTracker();
-    const { trackedPairs: focusedPairs, focusedRows } = await readFocusedTracker();
+    console.log('\nStep 3 — Reading trackers + FSM Directory…');
+    const [
+      { trackedPairs: fsmPairs, fsmRows },
+      { trackedPairs: focusedPairs, focusedRows },
+      activeFSMs,
+    ] = await Promise.all([
+      readFSMTracker(),
+      readFocusedTracker(),
+      loadActiveFSMs(),
+    ]);
     const allTrackedPairs = [...fsmPairs, ...focusedPairs];
     console.log(`  Total tracked person+quiz pairs with completion dates: ${allTrackedPairs.length}`);
 
     console.log('\nStep 4 — Building report…');
-    const completeGaps = printReport(submissions, allTrackedPairs);
+    const completeGaps = printReport(submissions, allTrackedPairs, activeFSMs);
 
     // ── Step 5: Write back ────────────────────────────────────────────────
     if (completeGaps.length > 0) {
