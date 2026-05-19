@@ -131,6 +131,20 @@ Extract the first name (first word only) for use in the Teams message greeting.
 `Created` in that order. Fall back to the page's `created_time` field if none are found.
 Format as `YYYY-MM-DD`.
 
+**Write submission date to tracker immediately (pre-grading):**
+
+Before grading, write the submission date to the FSM Completed Quiz Tracker — regardless
+of what score the submission will receive. Using the tracker map loaded in Step 1
+(do not re-query):
+
+- Find the tracker row matching this quiz (same matching logic as Step 5e)
+- Find the date property matching the submitter's cleaned full name (same fuzzy matching rules)
+- If the matching property is found AND its value is currently null/empty:
+  → Write the submission date (YYYY-MM-DD) to that property
+  → Log: ✓ Tracker pre-filled: "[Quiz row]" | [FSM column] → [date]
+- If the property already has a value: skip — do not overwrite. Log: ℹ Tracker already filled for [Name] / [Quiz] — skipping pre-fill
+- If no matching row or property: note the miss but continue to grading — do not abort
+
 **Grade the submission:** For each question where the answer key has a correct answer
 (Q3–Q8 where the answer key SELECT is non-empty):
 - Read the submission's SELECT value for that question
@@ -196,11 +210,14 @@ If no tracker row matches: log a warning for this submission and skip the tracke
 In the matched tracker row, find the date property whose name matches the submitter's
 cleaned full name using the fuzzy matching rules in the Reference section above.
 
+**Note:** The Step 4 pre-grading write may have already filled this cell. The check
+below handles both cases — only write if the cell is still empty.
+
 If a matching property is found and its value is currently null/empty:
 → Write the submission date (YYYY-MM-DD) to that property.
 → Log: ✓ Tracker updated: "[Quiz row]" | [FSM column] → [date]
 
-If the property already has a date value:
+If the property already has a date value (whether written in Step 4 or previously):
 → Do not overwrite. Log: ℹ Tracker already filled for [Name] / [Quiz] — skipping
 
 If no matching property name is found:
