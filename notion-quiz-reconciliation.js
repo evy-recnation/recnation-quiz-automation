@@ -408,32 +408,46 @@ async function patchPage(pageId, properties) {
 }
 
 async function writeBackCompletions(toWrite, fsmRows, focusedRows) {
-  if (!toWrite.length) { console.log('  Nothing to write back.'); return; }
+  const results = [];
+  if (!toWrite.length) { console.log('  Nothing to write.'); return results; }
 
   let fsmWrites = 0, focusedWrites = 0;
 
   for (const sub of toWrite) {
     const date = sub.date;
-    if (!date || date === '?') continue;
+    const result = {
+      name: sub.name, quizName: sub.quizName, date,
+      fsmStatus: 'no-match', focusedStatus: 'no-match',
+    };
+
+    if (!date || date === '?') {
+      result.fsmStatus = result.focusedStatus = 'no-date';
+      results.push(result);
+      continue;
+    }
 
     // ── FSM Completed Quiz Tracker: find row by quiz fp, column by person name ──
     const fsmRow = fsmRows.find((r) => r.fp === sub.fp);
     if (fsmRow) {
-      // Find the person column whose name fuzzy-matches the submission name
       const personCol = Object.keys(fsmRow.personDates).find(
         (col) => nameMatch(cleanName(col), sub.name)
       );
-      if (personCol && fsmRow.personDates[personCol] === null) {
-        if (DRY_RUN) {
-          console.log(`  [DRY-RUN] FSM tracker: row "${fsmRow.subject}" col "${personCol}" → ${date}`);
-        } else {
-          try {
-            await patchPage(fsmRow.rowId, { [personCol]: { date: { start: date } } });
-            console.log(`  ✓ FSM tracker: "${fsmRow.subject}" | ${personCol} → ${date}`);
-            fsmWrites++;
-          } catch (e) {
-            console.warn(`  ✗ FSM tracker write failed (${personCol}): ${e.message}`);
-          }
+      if (!personCol) {
+        result.fsmStatus = 'no-match';
+      } else if (fsmRow.personDates[personCol] !== null) {
+        result.fsmStatus = 'already-filled';
+      } else if (DRY_RUN) {
+        console.log(`  [DRY-RUN] FSM tracker: row "${fsmRow.subject}" col "${personCol}" → ${date}`);
+        result.fsmStatus = 'dry-run';
+      } else {
+        try {
+          await patchPage(fsmRow.rowId, { [personCol]: { date: { start: date } } });
+          console.log(`  ✓ FSM tracker: "${fsmRow.subject}" | ${personCol} → ${date}`);
+          result.fsmStatus = 'written';
+          fsmWrites++;
+        } catch (e) {
+          console.warn(`  ✗ FSM tracker write failed (${personCol}): ${e.message}`);
+          result.fsmStatus = 'error';
         }
       }
     }
@@ -441,24 +455,32 @@ async function writeBackCompletions(toWrite, fsmRows, focusedRows) {
     // ── Quiz Focused Tracker: find row by person name, column by quiz fp ──
     const focusedRow = focusedRows.find((r) => nameMatch(r.fsmName, sub.name));
     const focusedCol = FP_TO_FOCUSED_COL[sub.fp];
-    if (focusedRow && focusedCol && focusedRow.quizDates[focusedCol] === null) {
-      if (DRY_RUN) {
-        console.log(`  [DRY-RUN] Focused tracker: "${focusedRow.fsmName}" col "${focusedCol}" → ${date}`);
-      } else {
-        try {
-          await patchPage(focusedRow.rowId, { [focusedCol]: { date: { start: date } } });
-          console.log(`  ✓ Focused tracker: "${focusedRow.fsmName}" | ${focusedCol} → ${date}`);
-          focusedWrites++;
-        } catch (e) {
-          console.warn(`  ✗ Focused tracker write failed (${focusedCol}): ${e.message}`);
-        }
+    if (!focusedRow || !focusedCol) {
+      result.focusedStatus = 'no-match';
+    } else if (focusedRow.quizDates[focusedCol] !== null) {
+      result.focusedStatus = 'already-filled';
+    } else if (DRY_RUN) {
+      console.log(`  [DRY-RUN] Focused tracker: "${focusedRow.fsmName}" col "${focusedCol}" → ${date}`);
+      result.focusedStatus = 'dry-run';
+    } else {
+      try {
+        await patchPage(focusedRow.rowId, { [focusedCol]: { date: { start: date } } });
+        console.log(`  ✓ Focused tracker: "${focusedRow.fsmName}" | ${focusedCol} → ${date}`);
+        result.focusedStatus = 'written';
+        focusedWrites++;
+      } catch (e) {
+        console.warn(`  ✗ Focused tracker write failed (${focusedCol}): ${e.message}`);
+        result.focusedStatus = 'error';
       }
     }
+
+    results.push(result);
   }
 
   if (!DRY_RUN) {
     console.log(`  Wrote ${fsmWrites} FSM tracker cell(s), ${focusedWrites} Focused tracker cell(s).`);
   }
+  return results;
 }
 
 // ─── Step 5: Build & print report ────────────────────────────────────────────
@@ -468,10 +490,9 @@ function pad(s, n) {
   return str.length >= n ? str : str + ' '.repeat(n - str.length);
 }
 
-function printReport(submissions, allTrackedPairs, activeFSMs) {
+function printReport(submissions, allTrackedPairs, activeFSMs, writeResults) {
   const needsGrading  = submissions.filter((s) => !s.teamsMsg);
   const gradedNotSent = submissions.filter((s) => s.teamsMsg && !s.resultsSent);
-  const trackerGaps   = submissions.filter((s) => !inTracker(s, allTrackedPairs));
 
   const unrentableUngraded = needsGrading.filter((s) => norm(s.quizName).includes(UNRENTABLE_KEYWORD));
   const preReviewed  = unrentableUngraded.filter((s) => s.hasFeedback === true);
@@ -525,37 +546,29 @@ function printReport(submissions, allTrackedPairs, activeFSMs) {
 
   // ── C ─────────────────────────────────────────────────────────────────────
   console.log('\n' + SEP);
-  console.log('C) TRACKER GAPS — fully complete (graded + sent) but not found in either tracker');
-  console.log('   (filtered to active FSMs only — people not in directory or with Last Day filled are excluded)');
+  console.log('C) TRACKER WRITES — submission dates auto-written this run');
+  console.log('   (active FSMs only; cells already filled are skipped regardless of grading status)');
   console.log(SEP);
 
-  // Only flag gaps for active FSMs; silently skip former/non-FSM submitters
-  const allCompleteGaps = trackerGaps.filter((s) => s.teamsMsg && s.resultsSent);
-  const completeGaps    = allCompleteGaps.filter((s) => isActiveFSM(s.name, activeFSMs));
-  const skipped         = allCompleteGaps.filter((s) => !isActiveFSM(s.name, activeFSMs));
+  const statusLabel = {
+    'written':       '✓ written',
+    'already-filled':'ℹ filled',
+    'no-match':      '⚠ no col',
+    'error':         '✗ error',
+    'dry-run':       '[dry-run]',
+    'no-date':       '⚠ no date',
+  };
 
-  if (!completeGaps.length) {
-    console.log('   (none — all active FSM completions are tracked!)');
+  if (!writeResults.length) {
+    console.log('   (none — no tracker gaps found for active FSMs)');
   } else {
-    console.log(HDR); console.log(DIV);
-    completeGaps.forEach((s) =>
-      console.log(`   ${pad(s.quizName, 36)} ${pad(s.name, 28)} ${pad(s.date, 12)} Missing from tracker`)
-    );
-  }
-  if (skipped.length) {
-    console.log(`\n   Excluded (not active FSMs): ${skipped.map((s) => s.name).join(', ')}`);
-  }
-
-  // Incomplete-but-untracked: also filter to active FSMs
-  const incompleteUntracked = trackerGaps
-    .filter((s) => !(s.teamsMsg && s.resultsSent))
-    .filter((s) => isActiveFSM(s.name, activeFSMs));
-  if (incompleteUntracked.length) {
-    console.log(`\n   ── Also untracked but incomplete — active FSMs not yet fully graded/sent [${incompleteUntracked.length}] ──`);
-    console.log(HDR); console.log(DIV);
-    incompleteUntracked.forEach((s) =>
-      console.log(`   ${pad(s.quizName, 36)} ${pad(s.name, 28)} ${pad(s.date, 12)} Incomplete + untracked`)
-    );
+    console.log(`   ${pad('Quiz Name', 36)} ${pad('Person', 28)} ${pad('Date', 12)} ${pad('FSM Tracker', 15)} Focused Tracker`);
+    console.log('   ' + '─'.repeat(115));
+    for (const r of writeResults) {
+      const fsmLbl = statusLabel[r.fsmStatus]     ?? r.fsmStatus;
+      const focLbl = statusLabel[r.focusedStatus] ?? r.focusedStatus;
+      console.log(`   ${pad(r.quizName, 36)} ${pad(r.name, 28)} ${pad(r.date, 12)} ${pad(fsmLbl, 15)} ${focLbl}`);
+    }
   }
 
   // ── D ─────────────────────────────────────────────────────────────────────
@@ -563,30 +576,35 @@ function printReport(submissions, allTrackedPairs, activeFSMs) {
   console.log('D) SUMMARY');
   console.log(SEP);
 
-  const byQuiz = {};
-  for (const s of submissions) {
-    if (!byQuiz[s.quizName]) byQuiz[s.quizName] = { total: 0, complete: 0, gaps: 0 };
-    byQuiz[s.quizName].total++;
-    const tracked = inTracker(s, allTrackedPairs);
-    if (s.teamsMsg && s.resultsSent && tracked)  byQuiz[s.quizName].complete++;
-    // Only count as a gap if the person is an active FSM
-    if (s.teamsMsg && s.resultsSent && !tracked && isActiveFSM(s.name, activeFSMs))
-      byQuiz[s.quizName].gaps++;
+  const writtenByQuiz = {};
+  for (const r of writeResults) {
+    if (r.fsmStatus === 'written' || r.focusedStatus === 'written') {
+      writtenByQuiz[r.quizName] = (writtenByQuiz[r.quizName] ?? 0) + 1;
+    }
   }
 
-  console.log(`   ${pad('Quiz Name', 50)} ${pad('Total', 7)} ${pad('Fully Complete', 16)} Tracker Gaps`);
+  const byQuiz = {};
+  for (const s of submissions) {
+    if (!byQuiz[s.quizName]) byQuiz[s.quizName] = { total: 0, complete: 0 };
+    byQuiz[s.quizName].total++;
+    if (s.teamsMsg && s.resultsSent && inTracker(s, allTrackedPairs))
+      byQuiz[s.quizName].complete++;
+  }
+
+  console.log(`   ${pad('Quiz Name', 50)} ${pad('Total', 7)} ${pad('Fully Complete', 16)} Dates Written`);
   console.log('   ' + '─'.repeat(88));
-  let grandTotal = 0, grandComplete = 0, grandGaps = 0;
-  for (const [quiz, { total, complete, gaps }] of Object.entries(byQuiz).sort()) {
-    console.log(`   ${pad(quiz, 50)} ${pad(total, 7)} ${pad(complete, 16)} ${gaps}`);
+  let grandTotal = 0, grandComplete = 0, grandWritten = 0;
+  for (const [quiz, { total, complete }] of Object.entries(byQuiz).sort()) {
+    const written = writtenByQuiz[quiz] ?? 0;
+    console.log(`   ${pad(quiz, 50)} ${pad(total, 7)} ${pad(complete, 16)} ${written}`);
     grandTotal    += total;
     grandComplete += complete;
-    grandGaps     += gaps;
+    grandWritten  += written;
   }
   console.log('   ' + '─'.repeat(88));
-  console.log(`   ${pad('TOTAL', 50)} ${pad(grandTotal, 7)} ${pad(grandComplete, 16)} ${grandGaps}`);
+  console.log(`   ${pad('TOTAL', 50)} ${pad(grandTotal, 7)} ${pad(grandComplete, 16)} ${grandWritten}`);
   console.log('\n   "Fully Complete" = Teams Message ✓ + Results Sent ✓ + in tracker ✓');
-  console.log(  '   "Tracker Gaps"  = graded + sent + active FSM, but date missing from both trackers\n');
+  console.log(  '   "Dates Written" = tracker cells written this run (any submission, active FSMs)\n');
 
   // ── E: Unrentable deep-dive ───────────────────────────────────────────────
   if (unrentableUngraded.length > 0) {
@@ -609,7 +627,6 @@ function printReport(submissions, allTrackedPairs, activeFSMs) {
     console.log('');
   }
 
-  return completeGaps; // returned so main can write them back
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -640,19 +657,16 @@ function printReport(submissions, allTrackedPairs, activeFSMs) {
     const allTrackedPairs = [...fsmPairs, ...focusedPairs];
     console.log(`  Total tracked person+quiz pairs with completion dates: ${allTrackedPairs.length}`);
 
-    console.log('\nStep 4 — Building report…');
-    const completeGaps = printReport(submissions, allTrackedPairs, activeFSMs);
+    // ── Step 4: Auto-write tracker gaps for all active FSM submissions ────
+    const allActiveGaps = submissions.filter(
+      (s) => !inTracker(s, allTrackedPairs) && isActiveFSM(s.name, activeFSMs)
+    );
+    console.log(`\nStep 4 — Auto-writing tracker gaps (${allActiveGaps.length} submission(s) missing from tracker)…`);
+    if (DRY_RUN) console.log('(--dry-run: showing what would be written)');
+    const writeResults = await writeBackCompletions(allActiveGaps, fsmRows, focusedRows);
 
-    // ── Step 5: Write back ────────────────────────────────────────────────
-    if (completeGaps.length > 0) {
-      console.log('='.repeat(60));
-      console.log(`Step 5 — Writing ${completeGaps.length} missing completion date(s) back to trackers…`);
-      if (DRY_RUN) console.log('(--dry-run: showing what would be written)');
-      console.log('='.repeat(60));
-      await writeBackCompletions(completeGaps, fsmRows, focusedRows);
-    } else {
-      console.log('Step 5 — No write-backs needed (no fully-complete tracker gaps).');
-    }
+    console.log('\nStep 5 — Building report…');
+    printReport(submissions, allTrackedPairs, activeFSMs, writeResults);
 
   } catch (err) {
     console.error('\nFATAL ERROR:', err.message);
